@@ -86,7 +86,7 @@ function encodeTimestamp() {
 
 // ─── Metadata ──────────────────────────────────────────────
 
-export function buildMetadata(apiKey, version = '1.108.2', sessionId = null) {
+export function buildMetadata(apiKey, version = '1.9600.41', sessionId = null) {
   return Buffer.concat([
     writeStringField(1, 'windsurf'),          // ide_name
     writeStringField(2, version),             // extension_version
