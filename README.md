@@ -120,7 +120,7 @@ docker compose logs -f
 cd ~/WindsurfAPI && bash update.sh
 ```
 
-`update.sh` 做了：`git pull` → 停 PM2 → kill 3003 端口残留 → 重启 → 健康检查。
+`update.sh` 做了：`git pull` → 通过 `install-ls.sh` 更新 LS binary → 停 PM2 → kill 3003 端口残留 → 重启 → 健康检查。
 
 如果你用的是我们的公网实例（`skiapi.dev` 之类），不用管，我们已经推过了。
 

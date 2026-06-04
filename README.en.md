@@ -122,7 +122,7 @@ To pull the latest fixes after deployment, just run one command:
 cd ~/WindsurfAPI && bash update.sh
 ```
 
-`update.sh` does: `git pull` → stops PM2 → kills any residual process on port 3003 → restarts → health check.
+`update.sh` does: `git pull` → updates the LS binary via `install-ls.sh` → stops PM2 → kills any residual process on port 3003 → restarts → health check.
 
 If you are using our public instances (`skiapi.dev`, etc.), you don't need to do anything; we've already pushed the updates.
 
