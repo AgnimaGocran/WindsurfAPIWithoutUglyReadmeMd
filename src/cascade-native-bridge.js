@@ -597,6 +597,28 @@ export function buildReverseLookup(callerTools) {
   return out;
 }
 
+function nativeAllowlistNameOverrides() {
+  const out = new Map();
+  const raw = String(process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES || '').trim();
+  if (!raw) return out;
+  for (const part of raw.split(',')) {
+    const [left, ...rest] = part.split(':');
+    const key = String(left || '').trim();
+    const value = rest.join(':').trim();
+    if (!key || !value) continue;
+    out.set(key, value);
+  }
+  return out;
+}
+
+export function nativeAllowlistNameForTool(toolName) {
+  const name = String(toolName || '').trim();
+  const entry = TOOL_MAP[name];
+  if (!entry) return '';
+  const overrides = nativeAllowlistNameOverrides();
+  return overrides.get(name) || overrides.get(entry.kind) || entry.kind;
+}
+
 // ─── Forward: build cascade trajectory step proto ───────────────────
 //
 // These produce raw protobuf bytes that drop straight into

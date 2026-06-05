@@ -30,7 +30,7 @@ import {
   shouldUseNativeBridge, partitionTools, buildReverseLookup,
   buildAdditionalStepsFromHistory, parseNativeFunctionCallsFromText,
   NativeFunctionCallStreamParser, TOOL_MAP, isNativeBridgeAccountAllowed,
-  hasNativeBridgeAccountGate,
+  hasNativeBridgeAccountGate, nativeAllowlistNameForTool,
 } from '../cascade-native-bridge.js';
 import {
   handleSpecialAgentChatCompletion,
@@ -1540,7 +1540,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     : [];
   const nativeAllowlist = nativeBridgeOn
     ? Array.from(new Set(toolPartition.mapped
-        .map(t => TOOL_MAP[t?.function?.name]?.kind)
+        .map(t => nativeAllowlistNameForTool(t?.function?.name))
         .filter(Boolean)))
     : [];
   // Tools we ship to the emulation toolPreamble: the unmapped subset when

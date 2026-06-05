@@ -10,6 +10,7 @@ import {
   buildToolRoutingPlan,
   handleChatCompletions,
 } from '../src/handlers/chat.js';
+import { nativeAllowlistNameForTool } from '../src/cascade-native-bridge.js';
 
 const createdAccountIds = [];
 
@@ -29,6 +30,7 @@ const originalNativeBridgeModels = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_MO
 const originalNativeBridgeCallers = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_CALLERS;
 const originalNativeBridgeApiKeys = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_API_KEYS;
 const originalNativeBridgeAccounts = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ACCOUNTS;
+const originalNativeBridgeAllowlistNames = process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES;
 
 afterEach(() => {
   if (originalNativeBridge === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE;
@@ -45,6 +47,8 @@ afterEach(() => {
   else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_API_KEYS = originalNativeBridgeApiKeys;
   if (originalNativeBridgeAccounts === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ACCOUNTS;
   else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ACCOUNTS = originalNativeBridgeAccounts;
+  if (originalNativeBridgeAllowlistNames === undefined) delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES;
+  else process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES = originalNativeBridgeAllowlistNames;
   while (createdAccountIds.length) {
     removeAccount(createdAccountIds.pop());
   }
@@ -201,6 +205,19 @@ describe('native mapped-tool routing', () => {
     assert.equal(plan.nativeBridgeOn, true);
     assert.equal(plan.partition.mapped.length, 4);
     assert.equal(plan.partition.unmapped.length, 0);
+  });
+
+  it('can override Cascade allowlist names for proto matrix experiments only', () => {
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES;
+    assert.equal(nativeAllowlistNameForTool('Read'), 'view_file');
+    assert.equal(nativeAllowlistNameForTool('Grep'), 'grep_search_v2');
+    assert.equal(nativeAllowlistNameForTool('Glob'), 'find');
+
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_ALLOWLIST_NAMES = 'Read:read_file,Grep:grep_v2,find:list_dir';
+    assert.equal(nativeAllowlistNameForTool('Read'), 'read_file');
+    assert.equal(nativeAllowlistNameForTool('Grep'), 'grep_v2');
+    assert.equal(nativeAllowlistNameForTool('Glob'), 'list_dir');
+    assert.equal(nativeAllowlistNameForTool('Bash'), 'run_command');
   });
 
   it('all_mapped mode refuses mixed toolsets so unmapped tools still get prompt emulation', () => {
