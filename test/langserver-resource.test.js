@@ -160,6 +160,7 @@ describe('language server resource policy', () => {
     assert.match(AUTH_JS, /const admission = getLsAdmissionForAccount\(nextAccount\.id\)/);
     assert.match(AUTH_JS, /admission\.reason !== 'already_running'/);
     assert.match(AUTH_JS, /\(admission\.activeRequests \|\| 0\) > 0/);
+    assert.match(AUTH_JS, /\(admission\.maintenanceRequests \|\| 0\) > 0/);
     assert.match(AUTH_JS, /ensureLsForAccount\(nextAccount\.id\)\)\.then\(r =>/);
     assert.match(AUTH_JS, /r\?\.errorType \|\| 'ls_start_failed'/);
   });
@@ -182,6 +183,7 @@ describe('language server resource policy', () => {
     assert.match(ls, /const _pendingStartSeq = new Map\(\)/);
     assert.match(ls, /const _stopping = new Map\(\)/);
     assert.match(ls, /if \(!e\?\.ready\) continue/);
+    assert.match(ls, /_maintenanceUses\.get\(k\)/);
     assert.match(ls, /await withStartAdmissionLock/);
     assert.match(ls, /activeSpawnReservationCount\(\{ excludeKey: key, beforeSeq: pendingStartSeq \}\)/);
     assert.match(ls, /poolOccupancyWithPendingReservations\(\{ excludeKey: key, beforeSeq: pendingStartSeq \}\)/);
@@ -189,6 +191,22 @@ describe('language server resource policy', () => {
     assert.match(ls, /Ignoring stale LS exit/);
     assert.match(ls, /const _intentionalShutdownProcs = new WeakSet\(\)/);
     assert.match(ls, /markIntentionalShutdown\(entry\)/);
+  });
+
+  test('default LS and restart paths are guarded by the same admission budget', () => {
+    const ls = readFileSync(join(__dirname, '..', 'src/langserver.js'), 'utf8');
+    assert.doesNotMatch(ls, /function waitForPoolCapacity[\s\S]{0,120}key === 'default'\) return/);
+    assert.doesNotMatch(ls, /function waitForMemoryHeadroom[\s\S]{0,120}key === 'default'\) return/);
+    assert.match(ls, /function isDefaultBootstrapStart/);
+    assert.match(ls, /_stopping\.set\(key, \{ at: Date\.now\(\), pid: entry\?\.process\?\.pid \|\| null, reason: 'restart' \}\)/);
+    assert.match(ls, /await waitProcessExit\(entry\?\.process, 1500\)/);
+  });
+
+  test('probe maintenance has a second resident-only guard before ensureLs', () => {
+    assert.match(AUTH_JS, /function residentProbeSkip/);
+    assert.match(AUTH_JS, /_probeAccountImpl\(account, \{ allowLsStart \}/);
+    assert.match(AUTH_JS, /if \(!allowLsStart\) \{/);
+    assert.match(AUTH_JS, /const skipped = residentProbeSkip\(account, preAdmission\)/);
   });
 
   test('LS capacity formula counts pending starts before admitting cold proxies', () => {

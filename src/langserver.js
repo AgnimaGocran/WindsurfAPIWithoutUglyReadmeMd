@@ -320,6 +320,8 @@ function keyByPort(port) {
 export function beginLsUse(port) {
   const entry = getLsEntryByPort(port);
   if (!entry) return null;
+  const key = keyByPort(port);
+  if (key && (_maintenanceUses.get(key) || 0) > 0) return null;
   entry.activeRequests = (entry.activeRequests || 0) + 1;
   touchEntry(entry);
   return entry;
@@ -338,6 +340,7 @@ export function beginLsMaintenanceUse(port) {
   if ((entry.activeRequests || 0) > 0) return null;
   const key = keyByPort(port);
   if (!key) return null;
+  if ((_maintenanceUses.get(key) || 0) > 0) return null;
   _maintenanceUses.set(key, (_maintenanceUses.get(key) || 0) + 1);
   touchEntry(entry);
   return { key, port, generation: entry.generation };
@@ -522,6 +525,7 @@ function getIdleNonDefaultEvictionCandidates() {
     if (k === 'default') continue;
     if (!e?.ready) continue;
     if ((e.activeRequests || 0) > 0) continue;
+    if ((_maintenanceUses.get(k) || 0) > 0) continue;
     if (e.readyAt && now - e.readyAt < LS_EVICT_READY_GRACE_MS) continue;
     const at = e.lastUsedAt || e._evictAt || e.startedAt || 0;
     candidates.push({
@@ -820,7 +824,6 @@ export function getLsAdmissionStatus(proxy = null) {
 }
 
 async function waitForPoolCapacity(key, pendingStartSeq = Infinity) {
-  if (key === 'default') return;
   const start = Date.now();
   let logged = false;
   while (poolOccupancyWithPendingReservations({ excludeKey: key, beforeSeq: pendingStartSeq }) >= MAX_LS_INSTANCES) {
@@ -851,8 +854,17 @@ async function waitForPoolCapacity(key, pendingStartSeq = Infinity) {
   }
 }
 
+function isDefaultBootstrapStart(key) {
+  return key === 'default' && poolOccupancy() === 0;
+}
+
 async function waitForMemoryHeadroom(key, pendingStartSeq = Infinity) {
-  if (!LS_MEMORY_GUARD_ENABLED || key === 'default') return;
+  // Bootstrap exception: if no LS exists yet, allow the default instance to
+  // start so low-memory single-replica deployments do not fail closed before
+  // we have an observed RSS estimate. Once any LS/stopping reservation exists,
+  // default is guarded like every other instance.
+  if (isDefaultBootstrapStart(key)) return;
+  if (!LS_MEMORY_GUARD_ENABLED) return;
   const start = Date.now();
   let logged = false;
   while (true) {
@@ -884,6 +896,7 @@ export function sweepIdleLanguageServers(now = Date.now()) {
     if (key === 'default') continue;
     if (!entry?.ready) continue;
     if ((entry.activeRequests || 0) > 0) continue;
+    if ((_maintenanceUses.get(key) || 0) > 0) continue;
     const last = entry.lastUsedAt || entry.startedAt || now;
     if (now - last < LS_IDLE_TTL_MS) continue;
     markIntentionalShutdown(entry);
@@ -1339,12 +1352,13 @@ export async function ensureLs(proxy = null) {
         log.info(`LS instance ${key} ready on port ${port}`);
       } catch (err) {
         log.error(`LS instance ${key} failed to become ready: ${err.message}`);
-        try { proc.kill('SIGKILL'); } catch {}
-        if (_pool.get(key)?.process === proc) {
-          _pool.delete(key);
-          _maintenanceUses.delete(key);
-        }
-        throw err;
+      try { proc.kill('SIGKILL'); } catch {}
+      if (_pool.get(key)?.process === proc) {
+        _pool.delete(key);
+        _maintenanceUses.delete(key);
+      }
+      _stopping.delete(key);
+      throw err;
       }
     return entry;
     } catch (err) {
@@ -1372,10 +1386,11 @@ export async function ensureLs(proxy = null) {
 export async function restartLsForProxy(proxy) {
   const key = proxyKey(proxy);
   const entry = _pool.get(key);
+  if (!entry) return ensureLs(proxy);
   markIntentionalShutdown(entry);  // prevent auto-restart
-  if (entry?.process) {
-    try { entry.process.kill('SIGTERM'); } catch {}
-  }
+  _stopping.set(key, { at: Date.now(), pid: entry?.process?.pid || null, reason: 'restart' });
+  _pool.delete(key);
+  _maintenanceUses.delete(key);
   if (entry?.port) {
     // v2.0.25 LOW-1: same-port LS replacement opens a window where stale
     // pool entries from the old LS could resume against the new LS's
@@ -1387,8 +1402,14 @@ export async function restartLsForProxy(proxy) {
       m.invalidateFor({ lsPort: entry.port, lsGeneration: entry.generation });
     } catch {}
   }
-  _pool.delete(key);
-  _maintenanceUses.delete(key);
+  try { entry?.process?.kill('SIGTERM'); } catch {}
+  let how = await waitProcessExit(entry?.process, 1500);
+  if (how === 'timeout') {
+    try { entry?.process?.kill('SIGKILL'); } catch {}
+    how = await waitProcessExit(entry?.process, 500);
+  }
+  _stopping.delete(key);
+  log.info(`LS instance ${key} stopped for restart (${how})`);
   return ensureLs(proxy);
 }
 
@@ -1570,6 +1591,7 @@ export function stopLanguageServer() {
   const portsToClose = [];
   for (const [key, entry] of _pool) {
     markIntentionalShutdown(entry);  // prevent auto-restart
+    _stopping.set(key, { at: Date.now(), pid: entry?.process?.pid || null, reason: 'stop' });
     try { entry.process?.kill('SIGTERM'); } catch {}
     if (entry?.port) portsToClose.push({ port: entry.port, generation: entry.generation });
     log.info(`LS instance ${key} stopped`);
@@ -1584,6 +1606,11 @@ export function stopLanguageServer() {
       }
     }).catch(() => {});
   }
+  setTimeout(() => {
+    for (const [key, entry] of _stopping) {
+      if (entry?.reason === 'stop') _stopping.delete(key);
+    }
+  }, 2500).unref?.();
 }
 
 /**
@@ -1604,6 +1631,8 @@ export async function stopLanguageServerAndWait({ perProcessTimeoutMs = 1500 } =
   for (const [key, entry] of _pool) {
     if (entry?.process) procs.push({ key, proc: entry.process });
     if (entry?.port) portsToClose.push({ port: entry.port, generation: entry.generation });
+    _stopping.set(key, { at: Date.now(), pid: entry?.process?.pid || null, reason: 'stop_wait' });
+    markIntentionalShutdown(entry);
   }
   _pool.clear();
   _maintenanceUses.clear();
@@ -1612,6 +1641,7 @@ export async function stopLanguageServerAndWait({ perProcessTimeoutMs = 1500 } =
     const finish = (how) => {
       if (settled) return;
       settled = true;
+      _stopping.delete(key);
       log.info(`LS instance ${key} stopped (${how})`);
       resolve();
     };

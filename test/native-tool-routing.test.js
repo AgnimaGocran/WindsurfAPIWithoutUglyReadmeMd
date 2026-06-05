@@ -9,6 +9,7 @@ import { parseFields, writeMessageField, writeStringField, writeVarintField } fr
 import {
   applyToolPreambleBudget,
   buildToolRoutingPlan,
+  effectiveToolsForToolChoice,
   handleChatCompletions,
 } from '../src/handlers/chat.js';
 import {
@@ -139,6 +140,34 @@ describe('native bridge config status', () => {
 });
 
 describe('native mapped-tool routing', () => {
+  it('applies tool_choice before native bridge routing', () => {
+    const tools = [fnTool('Read'), fnTool('Bash')];
+    assert.deepEqual(effectiveToolsForToolChoice(tools, 'none'), []);
+    assert.deepEqual(
+      effectiveToolsForToolChoice(tools, { type: 'function', function: { name: 'Read' } }).map(t => t.function.name),
+      ['Read'],
+    );
+
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = 'all_mapped';
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
+    const nonePlan = buildToolRoutingPlan(effectiveToolsForToolChoice(tools, 'none'), {
+      useCascade: true,
+      modelKey: 'claude-sonnet-4.6',
+      provider: 'anthropic',
+      route: 'chat',
+    });
+    assert.equal(nonePlan.nativeBridgeOn, false);
+
+    const forcedPlan = buildToolRoutingPlan(effectiveToolsForToolChoice(tools, { type: 'function', function: { name: 'Read' } }), {
+      useCascade: true,
+      modelKey: 'claude-sonnet-4.6',
+      provider: 'anthropic',
+      route: 'chat',
+    });
+    assert.equal(forcedPlan.nativeBridgeOn, true);
+    assert.deepEqual(forcedPlan.nativeCallerTools.map(t => t.function.name), ['Read']);
+  });
+
   it('all_mapped mode routes Read/Bash/Grep/Glob through native bridge only', () => {
     process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = 'all_mapped';
     delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
@@ -534,5 +563,58 @@ describe('native mapped-tool routing', () => {
     assert.equal(stats.emittedToolCalls, 1);
     assert.equal(stats.requestedByTool.Read, 1);
     assert.equal(stats.emittedByTool.Read, 1);
+  });
+
+  it('stream native bridge filters cascade tool calls through forced tool_choice', async () => {
+    resetNativeBridgeStats();
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = 'all_mapped';
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
+    const account = addAccountByKey(`native-choice-${Date.now()}-${Math.random().toString(36).slice(2)}`, 'native-choice');
+    createdAccountIds.push(account.id);
+
+    class FakeClient {
+      async cascadeChat(_messages, _modelEnum, _modelUid, opts) {
+        assert.equal(opts.nativeMode, true);
+        assert.deepEqual(opts.nativeAllowlist, ['read_file']);
+        opts.onChunk({
+          nativeToolCall: {
+            cascade_native: true,
+            name: 'run_command',
+            argumentsJson: JSON.stringify({ command_line: 'echo should_not_surface' }),
+          },
+        });
+        return { text: '', toolCalls: [] };
+      }
+    }
+
+    const result = await handleChatCompletions({
+      model: 'claude-sonnet-4.6',
+      stream: true,
+      messages: [{ role: 'user', content: 'read the readme' }],
+      tools: [fnTool('Read'), fnTool('Bash')],
+      tool_choice: { type: 'function', function: { name: 'Read' } },
+    }, {
+      waitForAccount(tried, _signal, _maxWaitMs, modelKey) {
+        return tried.length === 0 ? getApiKey(tried, modelKey) : null;
+      },
+      ensureLs: async () => {},
+      getLsFor: () => ({ port: 17777, csrfToken: 'csrf', generation: 1 }),
+      WindsurfClient: FakeClient,
+    });
+
+    assert.equal(result.status, 200);
+    const res = fakeRes();
+    await result.handler(res);
+    assert.equal(res.body.includes('should_not_surface'), false);
+    const frames = parseChatFrames(res.body).filter(f => f !== '[DONE]');
+    const toolDeltas = frames.flatMap(f => f.choices || [])
+      .map(c => c.delta?.tool_calls?.[0])
+      .filter(Boolean);
+    assert.equal(toolDeltas.length, 0);
+    const stats = getNativeBridgeStats();
+    assert.equal(stats.requests, 1);
+    assert.equal(stats.cascadeToolCalls, 1);
+    assert.equal(stats.unmappedCascadeToolCalls, 1);
+    assert.equal(stats.emittedToolCalls, 0);
   });
 });

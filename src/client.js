@@ -31,6 +31,18 @@ import {
 
 const LS_SERVICE = '/exa.language_server_pb.LanguageServerService';
 
+function acquireLsUseOrThrow(port) {
+  const entry = beginLsUse(port);
+  if (entry) return entry;
+  if (!getLsEntryByPort(port)) return null;
+  const err = new Error('Language server is busy with maintenance; try another account or retry shortly');
+  err.code = 'LS_MAINTENANCE_BUSY';
+  err.type = 'ls_maintenance_busy';
+  err.status = 503;
+  err.isResourceExhausted = true;
+  return (() => { throw err; })();
+}
+
 export function isCascadeTransportError(err) {
   const msg = String(err?.message || err || '');
   return /pending stream has been canceled|ECONNRESET|ERR_HTTP2|session closed|stream closed|panel state/i.test(msg);
@@ -366,7 +378,7 @@ export class WindsurfClient {
    * @param {object} opts - { onChunk, onEnd, onError }
    */
   rawGetChatMessage(messages, modelEnum, modelName, opts = {}) {
-    beginLsUse(this.port);
+    acquireLsUseOrThrow(this.port);
     try {
       const { onChunk, onEnd, onError } = opts;
       // Reuse the LS-scoped session_id instead of letting buildMetadata
@@ -527,7 +539,7 @@ export class WindsurfClient {
   async cascadeChat(messages, modelEnum, modelUid, opts = {}) {
     let onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment;
     let nativeMode, nativeAllowlist, additionalSteps;
-    beginLsUse(this.port);
+    acquireLsUseOrThrow(this.port);
     try {
     ({
       onChunk, onEnd, onError, signal, reuseEntry, toolPreamble, displayModel, nativeEnvironment,
@@ -1252,7 +1264,7 @@ export class WindsurfClient {
   // model allowlist + credit usage + trial end time. Replaces the
   // probe-based tier inference for accounts where this call succeeds.
   async getUserStatus() {
-    beginLsUse(this.port);
+    acquireLsUseOrThrow(this.port);
     try {
       const proto = buildGetUserStatusRequest(this.apiKey);
       const resp = await grpcUnary(

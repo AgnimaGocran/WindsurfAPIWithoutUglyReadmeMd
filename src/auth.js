@@ -828,7 +828,7 @@ function schedulePrewarm(nextAccount) {
   const now = Date.now();
   if (nextAccount._prewarmAt && now - nextAccount._prewarmAt < PREWARM_COOLDOWN_MS) return;
   const admission = getLsAdmissionForAccount(nextAccount.id);
-  if (!admission.ok || admission.reason !== 'already_running' || (admission.activeRequests || 0) > 0) {
+  if (!admission.ok || admission.reason !== 'already_running' || (admission.activeRequests || 0) > 0 || (admission.maintenanceRequests || 0) > 0) {
     log.debug(`Prewarm ${nextAccount.id} skipped: ${admission.errorType || admission.reason} (wouldStart=${!!admission.wouldStart}, ls=${admission.key || '?'})`);
     return;
   }
@@ -1018,6 +1018,20 @@ export function getLsAdmissionForAccount(accountId) {
   const proxy = getEffectiveProxy(accountId) || null;
   const admission = getLsAdmissionStatus(proxy);
   return { accountId, ...admission };
+}
+
+function residentProbeSkip(account, admission = getLsAdmissionForAccount(account.id)) {
+  const busyReason = isAccountBusyForProbe(account) ? 'account_busy' : null;
+  if (!admission.ok || admission.reason !== 'already_running' || (admission.activeRequests || 0) > 0 || (admission.maintenanceRequests || 0) > 0 || busyReason) {
+    return {
+      skipped: true,
+      reason: admission.errorType || busyReason || admission.reason || 'ls_not_idle_resident',
+      tier: account.tier || 'unknown',
+      capabilities: account.capabilities || {},
+      admission,
+    };
+  }
+  return null;
 }
 
 /**
@@ -1556,32 +1570,27 @@ export async function probeAccount(id, { allowLsStart = true } = {}) {
 
   if (!allowLsStart) {
     const admission = getLsAdmissionForAccount(id);
-    const busyReason = isAccountBusyForProbe(account) ? 'account_busy'
-      : null;
-    if (!admission.ok || admission.reason !== 'already_running' || (admission.activeRequests || 0) > 0 || busyReason) {
-      return {
-        skipped: true,
-        reason: admission.errorType || busyReason || admission.reason || 'ls_not_idle_resident',
-        tier: account.tier || 'unknown',
-        capabilities: account.capabilities || {},
-        admission,
-      };
-    }
+    const skipped = residentProbeSkip(account, admission);
+    if (skipped) return skipped;
   }
 
-  const promise = _probeAccountImpl(account).finally(() => {
+  const promise = _probeAccountImpl(account, { allowLsStart }).finally(() => {
     _probeInFlight.delete(id);
   });
   _probeInFlight.set(id, promise);
   return promise;
 }
 
-async function _probeAccountImpl(account) {
+async function _probeAccountImpl(account, { allowLsStart = true } = {}) {
   let accountMaintenanceToken = null;
   let lsMaintenanceToken = null;
   try {
     const { beginLsMaintenanceUse } = await import('./langserver.js');
     const preAdmission = getLsAdmissionForAccount(account.id);
+    if (!allowLsStart) {
+      const skipped = residentProbeSkip(account, preAdmission);
+      if (skipped) return skipped;
+    }
     if (preAdmission.reason === 'already_running' && preAdmission.port) {
       accountMaintenanceToken = beginAccountMaintenance(account);
       lsMaintenanceToken = beginLsMaintenanceUse(preAdmission.port);

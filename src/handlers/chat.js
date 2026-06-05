@@ -194,6 +194,17 @@ export function filterToolCallsByAllowlist(toolCalls, tools) {
   return filtered;
 }
 
+export function effectiveToolsForToolChoice(tools, toolChoice) {
+  if (!Array.isArray(tools) || tools.length === 0) return tools || [];
+  if (toolChoice === 'none') return [];
+  let forced = '';
+  if (toolChoice && typeof toolChoice === 'object') {
+    forced = toolChoice.function?.name || toolChoice.name || '';
+  }
+  if (!forced) return tools;
+  return tools.filter(t => (t?.function?.name || t?.name || '') === forced);
+}
+
 export function redactRequestLogText(text) {
   return String(text || '')
     .replace(/sk-[A-Za-z0-9_-]{20,}/g, 'sk-***')
@@ -1352,6 +1363,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     tool_choice,
     response_format,
   } = body;
+  const effectiveTools = effectiveToolsForToolChoice(tools, tool_choice);
   // v2.0.66: merge reasoning_effort into the model id BEFORE alias
   // resolution so `gpt-5.5 + reasoning.effort=xhigh` resolves to
   // `gpt-5.5-xhigh`, not the medium-tier default.
@@ -1515,7 +1527,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   // overpowers user-message preambles. The section override replaces that
   // section directly so the model sees our emulated tool definitions as
   // authoritative system instructions.
-  const hasTools = Array.isArray(tools) && tools.length > 0;
+  const hasTools = Array.isArray(effectiveTools) && effectiveTools.length > 0;
   const hasToolHistory = Array.isArray(messages) && messages.some(m => m?.role === 'tool' || (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length));
   const emulateTools = useCascade && (hasTools || hasToolHistory);
 
@@ -1535,7 +1547,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
   //
   // v2.0.65 used canMapAllTools (all-or-nothing) which never fired for
   // codex CLI in production — the gate is now partitionTools().hasAny.
-  const toolRouting = buildToolRoutingPlan(tools, {
+  const toolRouting = buildToolRoutingPlan(effectiveTools, {
     useCascade,
     modelKey: routingModelKey,
     provider: modelInfo?.provider || null,
@@ -1687,7 +1699,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
       return true;
     });
   } else if (emulateTools) {
-    cascadeMessages = normalizeMessagesForCascade(messages, tools, {
+    cascadeMessages = normalizeMessagesForCascade(messages, effectiveTools, {
       injectUserPreamble: !disableUserToolFallback,
       modelKey: routingModelKey,
       provider: modelInfo?.provider || null,
@@ -1847,8 +1859,8 @@ async function _handleChatCompletionsInner(body, context = {}) {
       waitForAccount: waitForAccountFn,
       cachePolicy,
       wantThinking,
-      fpOpts: buildReuseOpts({ tools, toolChoice: tool_choice, toolPreamble, preambleTier, emulateTools, route: body.__route || 'chat' }),
-      tools,
+      fpOpts: buildReuseOpts({ tools: effectiveTools, toolChoice: tool_choice, toolPreamble, preambleTier, emulateTools, route: body.__route || 'chat' }),
+      tools: effectiveTools,
       route: body.__route || 'chat',
       nativeOpts,
       context,
@@ -1890,7 +1902,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     && shouldUseCascadeReuse({ useCascade, emulateTools, modelKey: routingModelKey })
     && (isExperimentalEnabled('cascadeConversationReuse') || shouldForceCascadeReuse({ emulateTools, modelKey: routingModelKey }));
   const strictReuse = shouldUseStrictCascadeReuse({ emulateTools, modelKey: routingModelKey });
-  const fpOpts = buildReuseOpts({ tools, toolChoice: tool_choice, toolPreamble, preambleTier: preambleTier || null, emulateTools, route: body.__route || 'chat' });
+  const fpOpts = buildReuseOpts({ tools: effectiveTools, toolChoice: tool_choice, toolPreamble, preambleTier: preambleTier || null, emulateTools, route: body.__route || 'chat' });
   const fpBefore = reuseEnabled ? fingerprintBefore(messages, routingModelKey, callerKey, fpOpts) : null;
   let reuseEntry = reuseEnabled ? poolCheckout(fpBefore, callerKey, null, routingModelKey) : null;
   let checkedOutReuseEntry = reuseEntry;
