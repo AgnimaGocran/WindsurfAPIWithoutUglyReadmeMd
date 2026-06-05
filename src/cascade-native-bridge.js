@@ -132,8 +132,11 @@ function envGateAllows(envName, values, { caseInsensitive = false } = {}) {
 
 function isNativeBridgeToolAllowed(name) {
   const configured = csvSetEnv('WINDSURFAPI_NATIVE_TOOL_BRIDGE_TOOLS');
-  const allow = configured.size ? configured : DEFAULT_NATIVE_BRIDGE_TOOLS;
-  return allow.has(String(name || ''));
+  const n = String(name || '');
+  if (!n) return false;
+  if (!configured.size) return DEFAULT_NATIVE_BRIDGE_TOOLS.has(n);
+  if (configured.has('*') || configured.has('all')) return Object.prototype.hasOwnProperty.call(TOOL_MAP, n);
+  return configured.has(n);
 }
 
 export function nativeBridgeGrayGateStatus({

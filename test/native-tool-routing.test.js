@@ -137,6 +137,51 @@ describe('native mapped-tool routing', () => {
     assert.deepEqual(plan.emulationTools.map(t => t.function.name), ['WebSearch', 'WebFetch']);
   });
 
+  it('keeps edit/write/web tools out of native bridge unless explicitly allowlisted', () => {
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = '1';
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_TOOLS;
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
+
+    const plan = buildToolRoutingPlan([
+      fnTool('Read'),
+      fnTool('Write'),
+      fnTool('Edit'),
+      fnTool('MultiEdit'),
+      fnTool('WebSearch'),
+      fnTool('WebFetch'),
+    ], {
+      useCascade: true,
+      modelKey: 'claude-sonnet-4.6',
+      provider: 'anthropic',
+      route: 'chat',
+    });
+
+    assert.equal(plan.nativeBridgeOn, true);
+    assert.deepEqual(plan.partition.mapped.map(t => t.function.name), ['Read']);
+    assert.deepEqual(plan.partition.unmapped.map(t => t.function.name), ['Write', 'Edit', 'MultiEdit', 'WebSearch', 'WebFetch']);
+  });
+
+  it('explicit native tool allowlist can opt WebSearch/WebFetch into native bridge', () => {
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = 'all_mapped';
+    process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_TOOLS = 'Read,WebSearch,WebFetch';
+    delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;
+
+    const plan = buildToolRoutingPlan([
+      fnTool('Read'),
+      fnTool('WebSearch'),
+      fnTool('WebFetch'),
+    ], {
+      useCascade: true,
+      modelKey: 'claude-sonnet-4.6',
+      provider: 'anthropic',
+      route: 'chat',
+    });
+
+    assert.equal(plan.nativeBridgeOn, true);
+    assert.deepEqual(plan.partition.mapped.map(t => t.function.name), ['Read', 'WebSearch', 'WebFetch']);
+    assert.deepEqual(plan.partition.unmapped, []);
+  });
+
   it('keeps shell/read/grep/find aliases in the default native scope', () => {
     process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE = 'all_mapped';
     delete process.env.WINDSURFAPI_NATIVE_TOOL_BRIDGE_OFF;

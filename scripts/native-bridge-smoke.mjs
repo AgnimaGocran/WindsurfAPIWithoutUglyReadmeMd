@@ -4,43 +4,102 @@ const baseUrl = (process.env.BASE_URL || process.env.WINDSURFAPI_BASE_URL || 'ht
 const apiKey = process.env.API_KEY || process.env.WINDSURFAPI_API_KEY || '';
 const model = process.env.MODEL || process.env.WINDSURFAPI_SMOKE_MODEL || 'claude-sonnet-4.6';
 const marker = `NATIVE_BRIDGE_SMOKE_${Date.now().toString(36)}`;
+const streamEnabled = process.env.NATIVE_BRIDGE_SMOKE_STREAM !== '0';
+const requestedScenarios = String(process.env.NATIVE_BRIDGE_SMOKE_TOOLS || 'Bash')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 if (!apiKey) {
-  console.error('API_KEY is required. Run the server with WINDSURFAPI_NATIVE_TOOL_BRIDGE=all_mapped before this smoke.');
+  console.error('API_KEY is required. Enable native bridge with narrow gates before this smoke.');
   process.exit(2);
 }
 
-const bashTool = {
-  type: 'function',
-  function: {
-    name: 'Bash',
-    description: 'Run a shell command in the configured workspace.',
-    parameters: {
-      type: 'object',
-      properties: {
-        command: { type: 'string' },
-        cwd: { type: 'string' },
+function fnTool(name, properties, required = []) {
+  return {
+    type: 'function',
+    function: {
+      name,
+      description: `${name} native bridge smoke tool.`,
+      parameters: {
+        type: 'object',
+        properties,
+        required,
+        additionalProperties: false,
       },
-      required: ['command'],
-      additionalProperties: false,
     },
+  };
+}
+
+const TOOL = {
+  Read: fnTool('Read', {
+    file_path: { type: 'string' },
+    offset: { type: 'number' },
+    limit: { type: 'number' },
+  }, ['file_path']),
+  Bash: fnTool('Bash', {
+    command: { type: 'string' },
+    cwd: { type: 'string' },
+  }, ['command']),
+  Grep: fnTool('Grep', {
+    pattern: { type: 'string' },
+    path: { type: 'string' },
+    glob: { type: 'string' },
+    output_mode: { type: 'string' },
+  }, ['pattern']),
+  Glob: fnTool('Glob', {
+    pattern: { type: 'string' },
+    path: { type: 'string' },
+  }, ['pattern']),
+};
+
+const SCENARIOS = {
+  Read: {
+    tools: [TOOL.Read],
+    choice: 'Read',
+    prompt: `Use the Read tool exactly once for README.md with limit 20. Marker: ${marker}. Do not answer in prose.`,
+  },
+  Bash: {
+    tools: [TOOL.Bash],
+    choice: 'Bash',
+    prompt: `Use the Bash tool exactly once with command: printf ${marker}. Do not answer in prose.`,
+  },
+  Grep: {
+    tools: [TOOL.Grep],
+    choice: 'Grep',
+    prompt: `Use the Grep tool exactly once to search for WindsurfAPI in README.md. Marker: ${marker}. Do not answer in prose.`,
+  },
+  Glob: {
+    tools: [TOOL.Glob],
+    choice: 'Glob',
+    prompt: `Use the Glob tool exactly once with pattern **/*.js and path src. Marker: ${marker}. Do not answer in prose.`,
+  },
+  mixed: {
+    tools: [TOOL.Read, TOOL.Bash, TOOL.Grep, TOOL.Glob],
+    choice: null,
+    prompt: `Choose exactly one appropriate tool from Read, Bash, Grep, Glob to inspect README.md for ${marker}. Do not answer in prose.`,
   },
 };
 
-function requestBody(stream) {
-  return {
+function expandScenarios(names) {
+  const out = [];
+  for (const name of names) {
+    if (name === 'all') out.push('Read', 'Bash', 'Grep', 'Glob', 'mixed');
+    else out.push(name);
+  }
+  return [...new Set(out)].filter(name => SCENARIOS[name]);
+}
+
+function requestBody(scenario, stream) {
+  const body = {
     model,
     stream,
-    messages: [
-      {
-        role: 'user',
-        content: `Use the Bash tool exactly once with command: printf ${marker}. Do not answer in prose.`,
-      },
-    ],
-    tools: [bashTool],
-    tool_choice: { type: 'function', function: { name: 'Bash' } },
+    messages: [{ role: 'user', content: scenario.prompt }],
+    tools: scenario.tools,
     max_tokens: 512,
   };
+  if (scenario.choice) body.tool_choice = { type: 'function', function: { name: scenario.choice } };
+  return body;
 }
 
 async function post(body) {
@@ -65,11 +124,13 @@ function assertNoNativeXml(text, label) {
 function parseSse(text) {
   const frames = [];
   for (const frame of text.split('\n\n')) {
-    const line = frame.split('\n').find(l => l.startsWith('data: '));
-    if (!line) continue;
-    const payload = line.slice(6);
-    if (payload === '[DONE]') continue;
-    try { frames.push(JSON.parse(payload)); } catch {}
+    const lines = frame.split('\n').filter(Boolean);
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6);
+      if (payload === '[DONE]') continue;
+      try { frames.push(JSON.parse(payload)); } catch {}
+    }
   }
   return frames;
 }
@@ -79,33 +140,54 @@ function collectStreamToolCalls(text) {
     .flatMap(choice => choice.delta?.tool_calls || []));
 }
 
-async function runNonStream() {
-  const res = await post(requestBody(false));
-  if (res.status !== 200) throw new Error(`non-stream HTTP ${res.status}: ${res.text.slice(0, 500)}`);
-  assertNoNativeXml(res.text, 'non-stream');
+function namesFromCalls(calls) {
+  return calls.map(c => c.function?.name || c.name || '').filter(Boolean);
+}
+
+function assertExpectedTool(calls, scenarioName, expected) {
+  const names = namesFromCalls(calls);
+  if (!names.length) throw new Error(`${scenarioName}: produced no tool_calls`);
+  if (expected && !names.includes(expected)) {
+    throw new Error(`${scenarioName}: expected ${expected}, got ${names.join(',')}`);
+  }
+  return names;
+}
+
+async function runNonStream(name, scenario) {
+  const res = await post(requestBody(scenario, false));
+  if (res.status !== 200) throw new Error(`${name} non-stream HTTP ${res.status}: ${res.text.slice(0, 800)}`);
+  assertNoNativeXml(res.text, `${name} non-stream`);
   const json = JSON.parse(res.text);
   const calls = json.choices?.[0]?.message?.tool_calls || [];
-  if (!calls.length) throw new Error(`non-stream produced no tool_calls: ${res.text.slice(0, 500)}`);
-  return { toolCalls: calls.length, names: calls.map(c => c.function?.name || c.name || '') };
+  return { toolCalls: calls.length, names: assertExpectedTool(calls, name, scenario.choice || '') };
 }
 
-async function runStream() {
-  const res = await post(requestBody(true));
-  if (res.status !== 200) throw new Error(`stream HTTP ${res.status}: ${res.text.slice(0, 500)}`);
-  assertNoNativeXml(res.text, 'stream');
+async function runStream(name, scenario) {
+  const res = await post(requestBody(scenario, true));
+  if (res.status !== 200) throw new Error(`${name} stream HTTP ${res.status}: ${res.text.slice(0, 800)}`);
+  assertNoNativeXml(res.text, `${name} stream`);
   const calls = collectStreamToolCalls(res.text);
-  if (!calls.length) throw new Error(`stream produced no tool_calls: ${res.text.slice(0, 500)}`);
-  return { toolCalls: calls.length, names: calls.map(c => c.function?.name || c.name || '') };
+  return { toolCalls: calls.length, names: assertExpectedTool(calls, name, scenario.choice || '') };
 }
 
-const summary = {
+const selected = expandScenarios(requestedScenarios);
+if (!selected.length) {
+  console.error(`No valid scenarios selected. Use one or more of: ${Object.keys(SCENARIOS).join(',')},all`);
+  process.exit(2);
+}
+
+const results = {};
+for (const name of selected) {
+  const scenario = SCENARIOS[name];
+  results[name] = { nonStream: await runNonStream(name, scenario) };
+  if (streamEnabled) results[name].stream = await runStream(name, scenario);
+}
+
+console.log(JSON.stringify({
+  ok: true,
   baseUrl,
   model,
   marker,
-  nonStream: await runNonStream(),
-};
-if (process.env.NATIVE_BRIDGE_SMOKE_STREAM !== '0') {
-  summary.stream = await runStream();
-}
-
-console.log(JSON.stringify({ ok: true, ...summary }, null, 2));
+  scenarios: selected,
+  results,
+}, null, 2));
