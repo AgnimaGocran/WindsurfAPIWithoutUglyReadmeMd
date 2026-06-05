@@ -278,6 +278,7 @@ function streamDiagnostics(text, calls = []) {
     toolCallNames: namesFromCalls(calls),
     toolCallSources: calls.map(toolCallSource),
     toolCallArguments: calls.map(toolCallArgumentPreview),
+    toolCallArgumentMeta: calls.map(toolCallArgumentMeta),
     contentPreview: compactText(contents.join('')),
     reasoningPreview: compactText(reasoning.join('')),
     usage: usageFrames.at(-1) || null,
@@ -294,6 +295,7 @@ function nonStreamDiagnostics(json, rawText, calls = []) {
     toolCallNames: namesFromCalls(calls),
     toolCallSources: calls.map(toolCallSource),
     toolCallArguments: calls.map(toolCallArgumentPreview),
+    toolCallArgumentMeta: calls.map(toolCallArgumentMeta),
     contentPreview: compactText(message.content || ''),
     usage: json?.usage || null,
     rawPreview: compactText(rawText),
@@ -351,6 +353,49 @@ function toolCallArgumentPreview(call) {
   return out;
 }
 
+function toolCallArgumentMeta(call) {
+  const args = parseToolCallArguments(call);
+  const issues = [];
+  const fields = {};
+  for (const [key, value] of Object.entries(args).slice(0, 12)) {
+    if (typeof value !== 'string') {
+      fields[key] = { type: typeof value };
+      continue;
+    }
+    const trimmed = value.trim();
+    const meta = {
+      type: 'string',
+      length: value.length,
+      redactedWorkspacePath: trimmed === '<workspace>',
+      basename: (() => {
+        const normalized = trimmed.replace(/\\/g, '/').replace(/\/+$/, '');
+        return normalized.split('/').pop() || '';
+      })(),
+    };
+    fields[key] = meta;
+    if (meta.redactedWorkspacePath) {
+      issues.push({
+        field: key,
+        reason: 'redacted_workspace_path',
+        message: 'The proxy redacted an internal workspace path; this is protocol evidence, but not a client-usable local path.',
+      });
+    }
+  }
+  return { fields, issues };
+}
+
+function scenarioArgumentIssue(scenarioName, args) {
+  if (scenarioName !== 'Read') return null;
+  const filePath = String(args.file_path || args.path || '').trim();
+  if (filePath === '<workspace>') {
+    return 'Read returned the workspace redaction marker instead of a concrete README.md path';
+  }
+  if (filePath && !/(^|[/\\])README\.md$/i.test(filePath)) {
+    return `Read returned basename "${filePath.replace(/\\/g, '/').split('/').pop() || filePath}" instead of README.md`;
+  }
+  return null;
+}
+
 function assertExpectedTool(calls, scenarioName, scenario, diagnostic = null) {
   const expected = scenario.choice || '';
   const matches = matchingToolCalls(calls, expected);
@@ -368,7 +413,12 @@ function assertExpectedTool(calls, scenarioName, scenario, diagnostic = null) {
     const ok = eligible.some(call => scenario.validateArgs(parseToolCallArguments(call)));
     if (!ok) {
       const expectedArgs = scenario.expectArgs || 'expected smoke arguments';
-      throw smokeError(`${scenarioName}: native bridge tool_call arguments did not match (${expectedArgs})`, diagnostic);
+      const issues = eligible
+        .map(call => scenarioArgumentIssue(scenarioName, parseToolCallArguments(call)))
+        .filter(Boolean);
+      const enriched = diagnostic ? { ...diagnostic, argumentValidationIssues: issues } : { argumentValidationIssues: issues };
+      const suffix = issues.length ? `; ${issues.join('; ')}` : '';
+      throw smokeError(`${scenarioName}: native bridge tool_call arguments did not match (${expectedArgs})${suffix}`, enriched);
     }
   }
   return names;

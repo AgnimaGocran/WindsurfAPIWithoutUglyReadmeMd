@@ -17,7 +17,7 @@ import {
   getDroughtSummary,
 } from '../auth.js';
 import { restartLsForProxy } from '../langserver.js';
-import { getLsStatus, stopLanguageServer, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
+import { getLsStatus, stopLanguageServerAndWait, startLanguageServer, isLanguageServerRunning, getLsAdmissionStatus } from '../langserver.js';
 import { getStats, resetStats, recordRequest } from './stats.js';
 import { cacheStats, cacheClear } from '../cache.js';
 import {
@@ -1168,9 +1168,9 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
     if (!body.confirm) {
       return json(res, 400, { error: 'Send { confirm: true } to restart language server' });
     }
-    stopLanguageServer();
-    setTimeout(async () => {
+    Promise.resolve().then(async () => {
       try {
+        await stopLanguageServerAndWait({ perProcessTimeoutMs: 1500 });
         await startLanguageServer({
           binaryPath: config.lsBinaryPath,
           port: config.lsPort,
@@ -1179,7 +1179,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       } catch (e) {
         log.error(`Language server restart failed: ${e.message}`);
       }
-    }, 2000);
+    });
     return json(res, 200, { success: true, message: 'Restarting language server...' });
   }
 

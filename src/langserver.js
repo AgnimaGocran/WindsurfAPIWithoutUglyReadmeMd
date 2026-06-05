@@ -758,6 +758,8 @@ export function getLsAdmissionStatus(proxy = null) {
       effectivePoolSize: effectiveOccupancy,
       maxInstances: MAX_LS_INSTANCES,
       pending,
+      port: existing.port || null,
+      generation: existing.generation || null,
       activeRequests: existing.activeRequests || 0,
       maintenanceRequests,
       memoryGuard,

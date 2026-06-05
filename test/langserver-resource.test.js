@@ -195,18 +195,29 @@ describe('language server resource policy', () => {
 
   test('default LS and restart paths are guarded by the same admission budget', () => {
     const ls = readFileSync(join(__dirname, '..', 'src/langserver.js'), 'utf8');
+    const dashboard = readFileSync(join(__dirname, '..', 'src/dashboard/api.js'), 'utf8');
     assert.doesNotMatch(ls, /function waitForPoolCapacity[\s\S]{0,120}key === 'default'\) return/);
     assert.doesNotMatch(ls, /function waitForMemoryHeadroom[\s\S]{0,120}key === 'default'\) return/);
     assert.match(ls, /function isDefaultBootstrapStart/);
     assert.match(ls, /_stopping\.set\(key, \{ at: Date\.now\(\), pid: entry\?\.process\?\.pid \|\| null, reason: 'restart' \}\)/);
     assert.match(ls, /await waitProcessExit\(entry\?\.process, 1500\)/);
+    assert.match(dashboard, /await stopLanguageServerAndWait\(\{ perProcessTimeoutMs: 1500 \}\)/);
+    assert.doesNotMatch(dashboard, /stopLanguageServer\(\);\s*setTimeout/);
   });
 
   test('probe maintenance has a second resident-only guard before ensureLs', () => {
+    const ls = readFileSync(join(__dirname, '..', 'src/langserver.js'), 'utf8');
     assert.match(AUTH_JS, /function residentProbeSkip/);
+    assert.match(AUTH_JS, /export async function fetchUserStatus\(id, \{ allowLsStart = true \} = \{\}\)/);
+    assert.match(AUTH_JS, /fetchUserStatus\(account\.id, \{ allowLsStart \}\)/);
     assert.match(AUTH_JS, /_probeAccountImpl\(account, \{ allowLsStart \}/);
     assert.match(AUTH_JS, /if \(!allowLsStart\) \{/);
     assert.match(AUTH_JS, /const skipped = residentProbeSkip\(account, preAdmission\)/);
+    assert.match(AUTH_JS, /const skipped = residentProbeSkip\(account, getLsAdmissionForAccount\(account\.id\)\)/);
+    assert.match(AUTH_JS, /if \(allowLsStart\) await ensureLs\(proxy\)/);
+    assert.match(AUTH_JS, /reason: busyReason \|\| admission\.errorType \|\| admission\.reason \|\| 'ls_not_idle_resident'/);
+    assert.match(ls, /port: existing\.port \|\| null/);
+    assert.match(ls, /generation: existing\.generation \|\| null/);
   });
 
   test('LS capacity formula counts pending starts before admitting cold proxies', () => {

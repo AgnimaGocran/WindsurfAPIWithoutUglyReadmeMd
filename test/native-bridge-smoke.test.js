@@ -372,4 +372,57 @@ describe('native bridge smoke CLI', () => {
       assert.deepEqual(stream.diagnostic.toolCallArguments, [{ pattern: '*', path: '/tmp/workspace' }]);
     });
   });
+
+  it('diagnoses Read calls that only return the workspace redaction marker', async () => {
+    await withMockServer((req, res) => {
+      if (req.url?.startsWith('/health')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          status: 'ok',
+          version: 'test-version',
+          commit: 'test-commit',
+          accounts: { total: 1, active: 1, error: 0 },
+          nativeBridge: { requests: 1, emittedByTool: { Read: 1 }, byCascadeKind: { view_file: 1 } },
+          nativeBridgeConfig: { mode: 'all_mapped', off: false },
+          lsPool: { running: true, pool: {}, memoryGuard: {} },
+        }));
+        return;
+      }
+
+      if (req.url === '/v1/chat/completions' && req.method === 'POST') {
+        req.resume();
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: {"id":"chatcmpl-mock","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n');
+        res.write('data: {"id":"chatcmpl-mock","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"native:view_file:1","type":"function","function":{"name":"Read","arguments":"{\\"file_path\\":\\"<workspace>\\",\\"limit\\":20}"}}]},"finish_reason":null}]}\n\n');
+        res.end('data: [DONE]\n\n');
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    }, async (baseUrl) => {
+      const result = await runNodeScript(join(root, 'scripts', 'native-bridge-smoke.mjs'), {
+        API_KEY: 'test-key',
+        BASE_URL: baseUrl,
+        MODEL: 'claude-test',
+        NATIVE_BRIDGE_SMOKE_TOOLS: 'Read',
+        NATIVE_BRIDGE_SMOKE_STREAM: '1',
+        NATIVE_BRIDGE_SMOKE_NON_STREAM: '0',
+        NATIVE_BRIDGE_SMOKE_NO_EXIT_ON_FAILURE: '1',
+        NATIVE_BRIDGE_SMOKE_EARLY_TOOL: '0',
+        NATIVE_BRIDGE_SMOKE_TIMEOUT_MS: '5000',
+      });
+
+      assert.equal(result.code, 0, result.stderr);
+      const json = JSON.parse(result.stdout);
+      assert.equal(json.ok, false);
+      const stream = json.results.Read.stream;
+      assert.match(stream.error, /workspace redaction marker/);
+      assert.deepEqual(stream.diagnostic.toolCallSources, ['cascade_native']);
+      assert.deepEqual(stream.diagnostic.toolCallArguments, [{ file_path: '<workspace>', limit: 20 }]);
+      assert.equal(stream.diagnostic.toolCallArgumentMeta[0].fields.file_path.redactedWorkspacePath, true);
+      assert.equal(stream.diagnostic.toolCallArgumentMeta[0].issues[0].reason, 'redacted_workspace_path');
+      assert.match(stream.diagnostic.argumentValidationIssues[0], /redaction marker/);
+    });
+  });
 });

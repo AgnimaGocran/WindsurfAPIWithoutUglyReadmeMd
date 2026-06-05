@@ -1025,7 +1025,7 @@ function residentProbeSkip(account, admission = getLsAdmissionForAccount(account
   if (!admission.ok || admission.reason !== 'already_running' || (admission.activeRequests || 0) > 0 || (admission.maintenanceRequests || 0) > 0 || busyReason) {
     return {
       skipped: true,
-      reason: admission.errorType || busyReason || admission.reason || 'ls_not_idle_resident',
+      reason: busyReason || admission.errorType || admission.reason || 'ls_not_idle_resident',
       tier: account.tier || 'unknown',
       capabilities: account.capabilities || {},
       admission,
@@ -1458,14 +1458,22 @@ function inferTier(caps) {
  * Fetch authoritative user status from the LS → account fields.
  * Returns the parsed UserStatus object on success, null on failure.
  */
-export async function fetchUserStatus(id) {
+export async function fetchUserStatus(id, { allowLsStart = true } = {}) {
   const account = accounts.find(a => a.id === id);
   if (!account) return null;
 
   const { WindsurfClient } = await import('./client.js');
   const { ensureLs, getLsFor } = await import('./langserver.js');
   const proxy = getEffectiveProxy(account.id) || null;
-  await ensureLs(proxy);
+  if (!allowLsStart) {
+    const admission = getLsAdmissionForAccount(account.id);
+    const skipped = residentProbeSkip(account, admission);
+    if (skipped) {
+      log.debug(`GetUserStatus ${account.id} skipped: ${skipped.reason} (wouldStart=${!!admission?.wouldStart}, ls=${admission?.key || '?'})`);
+      return null;
+    }
+  }
+  if (allowLsStart) await ensureLs(proxy);
   const ls = getLsFor(proxy);
   if (!ls) { log.warn(`No LS for GetUserStatus on ${account.id}`); return null; }
 
@@ -1608,14 +1616,18 @@ async function _probeAccountImpl(account, { allowLsStart = true } = {}) {
     }
 
     // ── Step 1: authoritative tier via GetUserStatus ──
-    const status = await fetchUserStatus(account.id);
+    const status = await fetchUserStatus(account.id, { allowLsStart });
 
   const { WindsurfClient } = await import('./client.js');
   const { getModelInfo } = await import('./models.js');
   const { ensureLs, getLsFor } = await import('./langserver.js');
 
   const proxy = getEffectiveProxy(account.id) || null;
-  await ensureLs(proxy);
+  if (!allowLsStart) {
+    const skipped = residentProbeSkip(account, getLsAdmissionForAccount(account.id));
+    if (skipped) return skipped;
+  }
+  if (allowLsStart) await ensureLs(proxy);
   const ls = getLsFor(proxy);
   if (!ls) { log.error(`No LS available for account ${account.id}`); return null; }
   const port = ls.port;
