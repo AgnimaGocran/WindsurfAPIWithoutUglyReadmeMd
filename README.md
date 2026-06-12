@@ -1,21 +1,3 @@
-# 给我点 Star 和 Follow 我就不管你了
-
-<p align="center">
-  <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
-  <a href="https://github.com/dwgx"><img src="https://img.shields.io/github/followers/dwgx?label=Follow&style=for-the-badge&logo=github&color=181717" alt="Follow"></a>
-  &nbsp;·&nbsp;
-  <a href="README.en.md">English</a>
-</p>
-
-# 声明
-
-> **没点 Star 和 Follow 的**：严禁商业使用、转售、代部署、挂后台对外提供服务、包装成中转服务出售。
-> **点了 Star 和 Follow 的**：随便用，我睁一只眼闭一只眼。
->
-> 代码本体按 MIT License 开源（见 [LICENSE](LICENSE)），上面这段是作者个人态度。
-
----
-
 把 [Windsurf](https://windsurf.com)（原 Codeium）的 AI 模型变成**两套标准 API 同时兼容**：
 
 - `POST /v1/chat/completions` — **OpenAI 兼容** 任何 OpenAI SDK 直接用
