@@ -1,21 +1,3 @@
-# Star & Follow me and I'll leave you alone
-
-<p align="center">
-  <a href="https://github.com/dwgx/WindsurfAPI/stargazers"><img src="https://img.shields.io/github/stars/dwgx/WindsurfAPI?style=for-the-badge&logo=github&color=f5c518" alt="Stars"></a>&nbsp;
-  <a href="https://github.com/dwgx"><img src="https://img.shields.io/github/followers/dwgx?label=Follow&style=for-the-badge&logo=github&color=181717" alt="Follow"></a>
-  &nbsp;·&nbsp;
-  <a href="README.md">中文/简体中文</a>
-</p>
-
-# Notice
-
-> **If you haven't starred and followed**: commercial use, resale, paid deployment, hosting as a backend for public services, or reselling as a relay service is strictly prohibited.
-> **If you have starred and followed**: go ahead, I'll look the other way.
->
-> The code itself is MIT-licensed (see [LICENSE](LICENSE)); the above is the author's personal stance.
-
----
-
 Turns [Windsurf](https://windsurf.com) (formerly Codeium)'s AI models into **two standard, compatible APIs**:
 
 - `POST /v1/chat/completions` — **OpenAI Compatible** for any OpenAI SDK.
